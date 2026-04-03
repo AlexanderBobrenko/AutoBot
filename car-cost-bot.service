@@ -1,0 +1,19 @@
+[Unit]
+Description=Car Cost Bot (Telegram)
+After=network.target
+
+[Service]
+Type=simple
+User=car_cost_bot
+Group=car_cost_bot
+WorkingDirectory=/opt/car_cost_bot
+EnvironmentFile=/opt/car_cost_bot/.env
+ExecStart=/usr/bin/python3 -u bot.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+
