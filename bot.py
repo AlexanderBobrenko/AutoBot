@@ -752,11 +752,30 @@ async def connect_google_handler(message: Message) -> None:
 
         credentials_path = os.path.join(os.getcwd(), "credentials.json")
         if not os.path.exists(credentials_path):
-            await message.answer(
-                "Не найден файл `credentials.json`.\nПоложи его в корень проекта и повтори /connect_google.",
-                reply_markup=get_main_keyboard(),
-            )
-            return
+            # Railway/Fly.io часто удобнее хранить JSON ключа в env, чем как файл.
+            # Если задана переменная `GOOGLE_CREDENTIALS_JSON`, создаём credentials.json на диске.
+            credentials_json = os.getenv("GOOGLE_CREDENTIALS_JSON", "").strip()
+            if credentials_json:
+                try:
+                    from pathlib import Path
+
+                    Path(credentials_path).write_text(credentials_json, encoding="utf-8")
+                except Exception as e:
+                    await message.answer(
+                        "Не удалось создать `credentials.json` из `GOOGLE_CREDENTIALS_JSON`.\n"
+                        f"Ошибка: {e}",
+                        reply_markup=get_main_keyboard(),
+                    )
+                    return
+            else:
+                await message.answer(
+                    "Не найден файл `credentials.json`.\n"
+                    "Варианты:\n"
+                    "1) Положи `credentials.json` в корень проекта.\n"
+                    "2) Или задай `GOOGLE_CREDENTIALS_JSON` (переменная окружения) на хостинге и повтори /connect_google.",
+                    reply_markup=get_main_keyboard(),
+                )
+                return
 
         import gspread
         from oauth2client.service_account import ServiceAccountCredentials
