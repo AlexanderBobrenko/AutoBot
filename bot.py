@@ -58,6 +58,23 @@ REMINDER_PERIODICITIES = {"once": "разово", "monthly": "ежемесячн
 SEARCH_PER_PAGE = 10
 
 
+def _is_cancel_text(text: str | None) -> bool:
+    """
+    Унифицированная отмена ввода во время FSM.
+
+    Пользователь на скрине отправляет команды, которые сейчас бот воспринимает как ввод,
+    поэтому вместо числовой валидации делаем явный выход.
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    t_lower = t.lower()
+    if t_lower in {"отмена", "/cancel", "/exit", "/end"}:
+        return True
+    # На случай "/exit@your_bot"
+    return t_lower.startswith("/cancel") or t_lower.startswith("/exit") or t_lower.startswith("/end")
+
+
 def _parse_float_ru(text: str) -> float | None:
     """
     Парсит числа вида "123.45" и "123,45".
@@ -163,6 +180,7 @@ class AddExpenseStates(StatesGroup):
 class AddFuelStates(StatesGroup):
     liters = State()
     price_per_liter = State()
+    car_model = State()
     mileage = State()
 
 
@@ -214,7 +232,7 @@ async def add_expense_start(message: Message, state: FSMContext) -> None:
         print(f"[bot] add_expense_start user_id={message.from_user.id}")
         await state.clear()
         await state.set_state(AddExpenseStates.amount)
-        await message.answer("Введите сумму (только цифры):")
+        await message.answer("Введите сумму (только цифры). Для отмены: /exit")
     except Exception as e:
         print(f"[bot] add_expense_start error: {e}")
         await message.answer("Ошибка. Попробуй позже.")
@@ -224,6 +242,10 @@ async def add_expense_start(message: Message, state: FSMContext) -> None:
 async def add_expense_amount(message: Message, state: FSMContext) -> None:
     try:
         if not await ensure_user_not_banned_message(message):
+            return
+        if _is_cancel_text(message.text):
+            await state.clear()
+            await message.answer("Ввод отменен.", reply_markup=get_main_keyboard())
             return
         text = (message.text or "").strip()
         print(f"[bot] amount user_id={message.from_user.id} text={text!r}")
@@ -241,12 +263,27 @@ async def add_expense_amount(message: Message, state: FSMContext) -> None:
         await state.set_state(AddExpenseStates.category)
 
         await message.answer(
-            "Выберите категорию:",
+            "Выберите категорию (отменить: /exit):",
             reply_markup=get_categories_keyboard(CATEGORIES),
         )
     except Exception as e:
         print(f"[bot] add_expense_amount error: {e}")
         await message.answer("Ошибка при вводе суммы. Попробуй снова.")
+
+
+@router.message(StateFilter(AddExpenseStates.category))
+async def add_expense_category_cancel(message: Message, state: FSMContext) -> None:
+    """
+    На этапе выбора категории у пользователя обычно callback-кнопки,
+    но если он прислал команду отмены — корректно выходим из FSM.
+    """
+    if not await ensure_user_not_banned_message(message):
+        return
+    if _is_cancel_text(message.text):
+        await state.clear()
+        await message.answer("Ввод отменен.", reply_markup=get_main_keyboard())
+        return
+    await message.answer("Сначала выберите категорию кнопкой или отмените: /exit")
 
 
 @router.callback_query(StateFilter(AddExpenseStates.category), F.data.startswith("cat:"))
@@ -269,7 +306,7 @@ async def add_expense_category(callback: CallbackQuery, state: FSMContext) -> No
 
         # Не меняем message текстом — просто отправляем новое.
         await callback.message.answer(
-            "Введите комментарий или отправьте `Пропустить`.",
+            "Введите деталь/название (или комментарий) или отправьте `Пропустить`.",
             parse_mode="Markdown",
         )
         await callback.answer()
@@ -282,6 +319,10 @@ async def add_expense_category(callback: CallbackQuery, state: FSMContext) -> No
 async def add_expense_comment(message: Message, state: FSMContext) -> None:
     try:
         if not await ensure_user_not_banned_message(message):
+            return
+        if _is_cancel_text(message.text):
+            await state.clear()
+            await message.answer("Ввод отменен.", reply_markup=get_main_keyboard())
             return
         user_id = message.from_user.id
         text = (message.text or "").strip()
@@ -306,8 +347,12 @@ async def add_expense_comment(message: Message, state: FSMContext) -> None:
 
         await state.clear()
         currency = DB.get_user_currency(user_id)
+        detail_line = comment if comment else "—"
         await message.answer(
-            f"Расход добавлен!\n{CATEGORY_DISPLAY.get(category, category)}: {_format_amount(amount, currency)}",
+            "Расход добавлен!\n"
+            f"{CATEGORY_DISPLAY.get(category, category)}\n"
+            f"Деталь/название: {detail_line}\n"
+            f"Сумма: {_format_amount(amount, currency)}",
             reply_markup=get_main_keyboard(),
         )
     except Exception as e:
@@ -443,7 +488,7 @@ async def add_fuel_start(message: Message, state: FSMContext) -> None:
             return
         await state.clear()
         await state.set_state(AddFuelStates.liters)
-        await message.answer("⛽ Введите количество литров:")
+        await message.answer("⛽ Введите количество литров. Для отмены: /exit")
     except Exception as e:
         print(f"[bot] add_fuel_start error: {e}")
         await message.answer("Ошибка. Попробуй позже.")
@@ -453,6 +498,10 @@ async def add_fuel_start(message: Message, state: FSMContext) -> None:
 async def add_fuel_liters(message: Message, state: FSMContext) -> None:
     try:
         if not await ensure_user_not_banned_message(message):
+            return
+        if _is_cancel_text(message.text):
+            await state.clear()
+            await message.answer("Ввод отменен.", reply_markup=get_main_keyboard())
             return
         value = _parse_float_ru(message.text or "")
         if value is None or value <= 0:
@@ -471,22 +520,54 @@ async def add_fuel_price(message: Message, state: FSMContext) -> None:
     try:
         if not await ensure_user_not_banned_message(message):
             return
+        if _is_cancel_text(message.text):
+            await state.clear()
+            await message.answer("Ввод отменен.", reply_markup=get_main_keyboard())
+            return
         value = _parse_float_ru(message.text or "")
         if value is None or value <= 0:
             await message.answer("Цена должна быть числом больше 0. Введите еще раз:")
             return
         await state.update_data(price_per_liter=value)
-        await state.set_state(AddFuelStates.mileage)
-        await message.answer("Введите текущий пробег (км):")
+        await state.set_state(AddFuelStates.car_model)
+        await message.answer("Введите деталь/название для заправки (или `Пропустить`):", parse_mode="Markdown")
     except Exception as e:
         print(f"[bot] add_fuel_price error: {e}")
         await message.answer("Ошибка при вводе цены. Попробуй снова.")
+
+
+@router.message(StateFilter(AddFuelStates.car_model))
+async def add_fuel_car_model(message: Message, state: FSMContext) -> None:
+    try:
+        if not await ensure_user_not_banned_message(message):
+            return
+        if _is_cancel_text(message.text):
+            await state.clear()
+            await message.answer("Ввод отменен.", reply_markup=get_main_keyboard())
+            return
+
+        text = (message.text or "").strip()
+        if text.lower() in {"пропустить", "пропущено", "skip"} or not text:
+            car_model = FUEL_CAR_MODEL_DEFAULT
+        else:
+            car_model = text
+
+        await state.update_data(car_model=car_model)
+        await state.set_state(AddFuelStates.mileage)
+        await message.answer("Введите текущий пробег (км):")
+    except Exception as e:
+        print(f"[bot] add_fuel_car_model error: {e}")
+        await message.answer("Ошибка при вводе названия. Попробуй снова.")
 
 
 @router.message(StateFilter(AddFuelStates.mileage))
 async def add_fuel_mileage(message: Message, state: FSMContext) -> None:
     try:
         if not await ensure_user_not_banned_message(message):
+            return
+        if _is_cancel_text(message.text):
+            await state.clear()
+            await message.answer("Ввод отменен.", reply_markup=get_main_keyboard())
             return
         value = _parse_float_ru(message.text or "")
         if value is None or value <= 0:
@@ -497,6 +578,7 @@ async def add_fuel_mileage(message: Message, state: FSMContext) -> None:
         user_id = int(message.from_user.id)
         liters = float(data["liters"])
         price_per_liter = float(data["price_per_liter"])
+        car_model = str(data.get("car_model") or FUEL_CAR_MODEL_DEFAULT)
         mileage = float(value)
         currency = DB.get_user_currency(user_id)
 
@@ -506,7 +588,7 @@ async def add_fuel_mileage(message: Message, state: FSMContext) -> None:
                 liters=liters,
                 price_per_liter=price_per_liter,
                 mileage=mileage,
-                car_model=FUEL_CAR_MODEL_DEFAULT,
+                car_model=car_model,
             )
         except ValueError as ve:
             await message.answer(f"Ошибка: {ve}\nВведите пробег еще раз (должен быть больше предыдущего).")
@@ -515,7 +597,7 @@ async def add_fuel_mileage(message: Message, state: FSMContext) -> None:
         total_cost_rub = int(round(liters * price_per_liter))
         await state.clear()
         await message.answer(
-            f"Заправка добавлена!\nСумма: {_format_amount(total_cost_rub, currency)}",
+            f"Заправка добавлена!\nДеталь/название: {car_model}\nСумма: {_format_amount(total_cost_rub, currency)}",
             reply_markup=get_main_keyboard(),
         )
     except Exception as e:
